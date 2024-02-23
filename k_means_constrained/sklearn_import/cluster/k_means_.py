@@ -30,6 +30,109 @@ from k_means_constrained.sklearn_import.cluster import _k_means
 # Initialization heuristic
 
 
+def _k_init_two_data_sets(cabinets, clients, distances, n_clusters, random_state, n_local_trials=None):
+    """Init n_clusters seeds according to k-means++
+
+    Parameters
+    -----------
+    x : array or sparse matrix, shape (n_samples, n_features)
+        The data to pick seeds for. To avoid memory copy, the input data
+        should be double precision (dtype=np.float64).
+
+    n_clusters : integer
+        The number of seeds to choose
+
+    x_squared_norms : array, shape (n_samples,)
+        Squared Euclidean norm of each data point.
+
+    random_state : numpy.RandomState
+        The generator used to initialize the centers.
+
+    n_local_trials : integer, optional
+        The number of seeding trials for each center (except the first),
+        of which the one reducing inertia the most is greedily chosen.
+        Set to None to make the number of trials depend logarithmically
+        on the number of seeds (2+log(k)); this is the default.
+
+    Notes
+    -----
+    Selects initial cluster centers for k-mean clustering in a smart way
+    to speed up convergence. see: Arthur, D. and Vassilvitskii, S.
+    "k-means++: the advantages of careful seeding". ACM-SIAM symposium
+    on Discrete algorithms. 2007
+
+    Version ported from http://www.stanford.edu/~darthur/kMeansppTest.zip,
+    which is the implementation used in the aforementioned paper.
+    """
+    # n_samples, n_features = x.shape
+    cabinets_length = len(cabinets)
+    clients_length  = len(clients)
+
+    centers = np.empty((n_clusters, 2), dtype=float)
+
+    # assert x_squared_norms is not None, 'x_squared_norms None in _k_init'
+
+    # Set the number of local seeding trials if none is given
+    if n_local_trials is None:
+        # This is what Arthur/Vassilvitskii tried, but did not report
+        # specific results for other than mentioning in the conclusion
+        # that it helped.
+        n_local_trials = 2 + int(np.log(n_clusters))
+
+    # Pick first center randomly
+    # center_id = random_state.randint(n_samples)
+    center_cabinet_id = f"client_{random_state.randint(clients_length)}"
+    centers[0]  = np.array(clients[center_cabinet_id])
+
+    # Initialize list of closest distances and calculate current potential
+    # closest_dist_sq = euclidean_distances(
+    #     centers[0, np.newaxis], x
+    #     squared=True
+    # )
+    closest_dist_sq   = distances
+    current_potential = closest_dist_sq.sum()
+
+    # Pick the remaining n_clusters-1 points
+    for cluster_index in range(1, n_clusters):
+        # Choose center candidates by sampling with probability proportional
+        # to the squared distance to the closest existing center
+        rand_vals     = random_state.random_sample(n_local_trials) * current_potential
+        candidate_ids = np.searchsorted(stable_cumsum(closest_dist_sq), rand_vals)
+
+        # Compute distances to center candidates
+        # distance_to_candidates = euclidean_distances(
+        #     x[candidate_ids],
+        #     x,
+        #     squared=True
+        # )
+
+        # Decide which candidate is the best
+        best_candidate = None
+        best_potential = None
+        best_dist_sq   = None
+        for trial in range(n_local_trials):
+            # Compute potential when including center candidate
+            # new_dist_sq   = np.minimum(closest_dist_sq, distance_to_candidates[trial])
+            # compare the closest distance before, to the sum of the distances of a different column
+            new_dist_sq   = np.minimum(closest_dist_sq.sum(), distances[:, trial].sum())
+            new_potential = new_dist_sq
+
+            # Store result if it is the best local trial so far
+            if (best_candidate is None) or (new_potential < best_potential):
+                best_candidate_key = f"cabinet_{trial}"
+                best_candidate     = cabinets[best_candidate_key]
+                best_potential     = new_potential
+                best_dist_sq       = new_dist_sq
+
+        # Permanently add best center candidate found in local tries
+        centers[cluster_index] = cabinets[best_candidate_key]
+
+        current_potential = best_potential
+        closest_dist_sq   = best_dist_sq
+
+    return centers
+
+
 def _k_init(X, n_clusters, x_squared_norms, random_state, n_local_trials=None):
     """Init n_clusters seeds according to k-means++
 
@@ -82,6 +185,8 @@ def _k_init(X, n_clusters, x_squared_norms, random_state, n_local_trials=None):
     if sp.issparse(X):
         centers[0] = X[center_id].toarray()
     else:
+        # centers is an array of elements that are all [0., 0.]
+        # X is an array of elements that are like [  7859.10785397, -20651.49294316], [ -1789.33764604, -28217.69044316],
         centers[0] = X[center_id]
 
     # Initialize list of closest distances and calculate current potential
@@ -132,17 +237,30 @@ def _k_init(X, n_clusters, x_squared_norms, random_state, n_local_trials=None):
 ###############################################################################
 # K-means batch estimation by EM (expectation maximization)
 
-def _validate_center_shape(X, n_centers, centers):
-    """Check if centers is compatible with X and n_centers"""
+
+def _validate_center_shape_two_data_sets(x, n_centers, centers):
+    """Check if centers is compatible with x and n_centers"""
     if len(centers) != n_centers:
         raise ValueError('The shape of the initial centers (%s) '
                          'does not match the number of clusters %i'
                          % (centers.shape, n_centers))
-    if centers.shape[1] != X.shape[1]:
+    if centers.shape[1] != x.shape[1]:
         raise ValueError(
             "The number of features of the initial centers %s "
             "does not match the number of features of the data %s."
-            % (centers.shape[1], X.shape[1]))
+            % (centers.shape[1], x.shape[1]))
+
+def _validate_center_shape(x, n_centers, centers):
+    """Check if centers is compatible with x and n_centers"""
+    if len(centers) != n_centers:
+        raise ValueError('The shape of the initial centers (%s) '
+                         'does not match the number of clusters %i'
+                         % (centers.shape, n_centers))
+    if centers.shape[1] != x.shape[1]:
+        raise ValueError(
+            "The number of features of the initial centers %s "
+            "does not match the number of features of the data %s."
+            % (centers.shape[1], x.shape[1]))
 
 
 def _tolerance(X, tol):
@@ -251,6 +369,90 @@ def _labels_inertia(X, x_squared_norms, centers,
     return labels, inertia
 
 
+
+def _init_centroids_two_data_sets(x, y, distances, k, init, random_state=None, x_squared_norms=None, init_size=None):
+    """Compute the initial centroids
+
+    Parameters
+    ----------
+
+    x : array, shape (n_samples, n_features)
+
+    k : int
+        number of centroids
+
+    init : {'k-means++', 'random' or ndarray or callable} optional
+        Method for initialization
+
+    random_state : int, RandomState instance or None, optional, default: None
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random`.
+
+    x_squared_norms :  array, shape (n_samples,), optional
+        Squared euclidean norm of each data point. Pass it if you have it at
+        hands already to avoid it being recomputed here. Default: None
+
+    init_size : int, optional
+        Number of samples to randomly sample for speeding up the
+        initialization (sometimes at the expense of accuracy): the
+        only algorithm is initialized by running a batch KMeans on a
+        random subset of the data. This needs to be larger than k.
+
+    Returns
+    -------
+    centers : array, shape(k, n_features)
+    """
+    random_state = check_random_state(random_state)
+    # n_samples = x.shape[0]
+    n_samples = len(x)
+
+
+    # if x_squared_norms is None:
+    #     x_squared_norms = row_norms(x, squared=True)
+
+    if init_size is not None and init_size < n_samples:
+        if init_size < k:
+            warnings.warn(
+                "init_size=%d should be larger than k=%d. "
+                "Setting it to 3*k" % (init_size, k),
+                RuntimeWarning, stacklevel=2)
+            init_size = 3 * k
+        init_indices = random_state.randint(0, n_samples, init_size)
+        x = x[init_indices]
+        x_squared_norms = x_squared_norms[init_indices]
+        n_samples = x.shape[0]
+    elif n_samples < k:
+        raise ValueError(
+            "n_samples=%d should be larger than k=%d" % (n_samples, k))
+
+    if isinstance(init, string_types) and init == 'k-means++':
+        centers = _k_init_two_data_sets(x, y, distances, k, random_state=random_state)
+    elif isinstance(init, string_types) and init == 'random':
+        seeds = random_state.permutation(n_samples)[:k]
+        centers = x[seeds]
+    elif hasattr(init, '__array__'):
+        # ensure that the centers have the same dtype as x
+        # this is a requirement of fused types of cython
+        centers = np.array(init, dtype=x.dtype)
+    elif callable(init):
+        centers = init(x, k, random_state=random_state)
+        centers = np.asarray(centers, dtype=x.dtype)
+    else:
+        raise ValueError("the init parameter for the k-means should "
+                         "be 'k-means++' or 'random' or an ndarray, "
+                         "'%s' (type '%s') was passed." % (init, type(init)))
+
+    if sp.issparse(centers):
+        centers = centers.toarray()
+
+    # _validate_center_shape_two_data_sets(x, k, centers)
+    return centers
+
+
+
+
 def _init_centroids(X, k, init, random_state=None, x_squared_norms=None,
                     init_size=None):
     """Compute the initial centroids
@@ -308,8 +510,7 @@ def _init_centroids(X, k, init, random_state=None, x_squared_norms=None,
             "n_samples=%d should be larger than k=%d" % (n_samples, k))
 
     if isinstance(init, string_types) and init == 'k-means++':
-        centers = _k_init(X, k, random_state=random_state,
-                          x_squared_norms=x_squared_norms)
+        centers = _k_init(X, k, random_state=random_state, x_squared_norms=x_squared_norms)
     elif isinstance(init, string_types) and init == 'random':
         seeds = random_state.permutation(n_samples)[:k]
         centers = X[seeds]
@@ -469,24 +670,24 @@ class KMeans(BaseEstimator, ClusterMixin, TransformerMixin):
                  verbose=0, random_state=None, copy_x=True,
                  n_jobs=1, algorithm='auto'):
 
-        self.n_clusters = n_clusters
-        self.init = init
-        self.max_iter = max_iter
-        self.tol = tol
+        self.n_clusters           = n_clusters
+        self.init                 = init
+        self.max_iter             = max_iter
+        self.tol                  = tol
         self.precompute_distances = precompute_distances
-        self.n_init = n_init
-        self.verbose = verbose
-        self.random_state = random_state
-        self.copy_x = copy_x
-        self.n_jobs = n_jobs
-        self.algorithm = algorithm
+        self.n_init               = n_init
+        self.verbose              = verbose
+        self.random_state         = random_state
+        self.copy_x               = copy_x
+        self.n_jobs               = n_jobs
+        self.algorithm            = algorithm
 
     def _check_fit_data(self, X):
         """Verify that the number of samples given is larger than k"""
-        X = check_array(X, accept_sparse='csr', dtype=[np.float64, np.float32])
-        if X.shape[0] < self.n_clusters:
-            raise ValueError("n_samples=%d should be >= n_clusters=%d" % (
-                X.shape[0], self.n_clusters))
+        # X = check_array(X, accept_sparse='csr', dtype=[np.float64, np.float32])
+        # if X.shape[0] < self.n_clusters:
+        #     raise ValueError("n_samples=%d should be >= n_clusters=%d" % (
+        #         X.shape[0], self.n_clusters))
         return X
 
     def _check_test_data(self, X):
@@ -618,5 +819,3 @@ class KMeans(BaseEstimator, ClusterMixin, TransformerMixin):
         X = self._check_test_data(X)
         x_squared_norms = row_norms(X, squared=True)
         return -_labels_inertia(X, x_squared_norms, self.cluster_centers_)[1]
-
-

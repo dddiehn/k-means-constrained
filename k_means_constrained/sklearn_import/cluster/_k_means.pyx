@@ -85,6 +85,86 @@ def _centers_dense(np.ndarray[floating, ndim=2] X,
 
     return centers
 
+def _centers_dense_two_data_sets(
+        dict                         cabinets,
+        dict                         clients,
+        np.ndarray[INT, ndim=1]      labels,
+        int                          n_clusters,
+        np.ndarray[floating, ndim=2] distances
+    ):
+    """M step of the K-means EM algorithm
+
+    Computation of cluster centers / means.
+
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+
+    labels : array of integers, shape (n_samples)
+        Current label assignment
+
+    n_clusters : int
+        Number of desired clusters
+
+    distances : array-like, shape (n_samples)
+        Distance to closest cluster for each sample.
+
+    Returns
+    -------
+    centers : array, shape (n_clusters, n_features)
+        The resulting centers
+    """
+    ## TODO: add support for CSR input
+    cdef int n_samples, n_features
+    cdef int i, j, c
+    cdef np.ndarray[floating, ndim=2] centers
+
+    n_samples  = len(cabinets)
+    n_features = len(clients)
+
+    if floating is float:
+        centers = np.zeros((n_clusters, n_features), dtype=np.float32)
+    else:
+        centers = np.zeros((n_clusters, n_features), dtype=np.float64)
+
+    n_samples_in_cluster = np.bincount(labels, minlength=n_clusters)
+    empty_clusters       = np.where(n_samples_in_cluster == 0)[0]
+    # maybe also relocate small clusters?
+
+    if len(empty_clusters):
+        # find points to reassign empty clusters to
+
+        # grab each cabinet, sum up the total distances to all the clients
+        # find the one with the largest distance
+        # find
+        total_distances_from_cabinets = distances.sum(axis=1)
+        farthest_distance             = total_distances_from_cabinets.argsort()[::-1]
+        cabinet_index                 = np.argwhere(total_distances_from_cabinets == farthest_distance)[0][0]
+
+        for i, cluster_id in enumerate(empty_clusters):
+            # xxx two relocated clusters could be close to each other
+            # print("far_from_centers[i]:", [i])
+
+            print("!" * 100)
+            print(type(cabinet_index))
+            print(cabinet_index)
+            print("!" * 100)
+            print(cabinets)
+            print("!" * 100)
+            print(cluster_id)
+            print("!" * 100)
+            new_center                       = cabinets[f"cabinet_{cabinet_index}"]
+            centers[cluster_id]              = new_center
+            n_samples_in_cluster[cluster_id] = 1
+
+    for i in range(n_samples):
+        for j in range(n_features):
+            centers[labels[i], j] += cabinets[i, j]
+
+    centers /= n_samples_in_cluster[:, np.newaxis]
+
+    return centers
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
